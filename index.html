@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>First Person Horror: Escape Python</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; overflow: hidden; height: 100%;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: black;
+    color: white;
+  }
+  #overlay {
+    position: absolute;
+    top: 10px; left: 10px;
+    z-index: 10;
+    background: rgba(0,0,0,0.6);
+    padding: 10px 15px;
+    border-radius: 8px;
+    font-size: 16px;
+    max-width: 300px;
+  }
+  #message {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(15,15,15,0.95);
+    padding: 30px;
+    border-radius: 12px;
+    font-size: 24px;
+    text-align: center;
+    display: none;
+    max-width: 400px;
+    color: #ff4444;
+  }
+  #startScreen {
+    position: absolute;
+    top:0; left:0; width: 100%; height: 100%;
+    background: #000;
+    color: white;
+    display:flex;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+    z-index: 20;
+    font-size: 24px;
+  }
+  button {
+    background: #ff4444;
+    border: none;
+    padding: 14px 30px;
+    font-size: 20px;
+    color: white;
+    cursor: pointer;
+    border-radius: 8px;
+    margin-top: 15px;
+    transition: background 0.3s ease;
+  }
+  button:hover {
+    background: #ff2222;
+  }
+  #inventory {
+    margin-top: 8px;
+    font-weight: bold;
+    color: #aaffaa;
+  }
+</style>
+</head>
+<body>
+<div id="startScreen">
+  <h1>Escape the Python</h1>
+  <p>You are trapped in a dark maze, pursued by the deadly Python.</p>
+  <p>Collect all the hidden codes scattered through the maze before confronting it.</p>
+  <p>Use WASD or arrow keys to move, mouse to look around. Click to start.</p>
+  <button id="startBtn">Start Game</button>
+</div>
+<div id="overlay" style="display:none;">
+  <div>Codes Collected: <span id="codesCount">0</span>/5</div>
+  <div id="inventory"></div>
+  <div id="instructions" style="margin-top:10px; font-size:14px; color:#ccc;">
+    Collect all codes and survive. Run from Python! After collecting all codes, fight to survive.
+  </div>
+  <div id="health" style="margin-top:8px; font-weight:bold; color:#ff6666;">Health: 100</div>
+</div>
+<div id="message"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.150.1/examples/js/controls/PointerLockControls.js"></script>
+<script>
+(() => {
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0a0a);
+
+  const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  // Lighting
+  const ambientLight = new THREE.AmbientLight(0x404040, 0.8);
+  scene.add(ambientLight);
+
+  const pointLight = new THREE.PointLight(0xff4444, 1.5, 15);
+  pointLight.position.set(0, 5, 0);
+  scene.add(pointLight);
+
+  // Floor
+  const floorGeometry = new THREE.PlaneGeometry(50, 50);
+  const floorMaterial = new THREE.MeshPhongMaterial({ color: 0x222222 });
+  const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+  floor.rotation.x = - Math.PI / 2;
+  scene.add(floor);
+
+  // Walls simple maze (box cubes)
+  const wallMaterial = new THREE.MeshPhongMaterial({ color: 0x111111 });
+  const walls = [];
+
+  // Maze layout with simple corridors - array of wall boxes (x,z,width,height)
+  const mazeWallsData = [
+    // perimeter walls
+    {x:0,z:-25,w:50,h:1},
+    {x:0,z:25,w:50,h:1},
+    {x:-25,z:0,w:1,h:50},
+    {x:25,z:0,w:1,h:50},
+    // internal walls
+    {x:-15,z:-10,w:20,h:1},
+    {x:10,z:-15,w:1,h:20},
+    {x:3,z:0,w:10,h:1},
+    {x:-10,z:10,w:1,h:10},
+    {x:10,z:10,w:10,h:1},
+  ];
+
+  mazeWallsData.forEach((w) => {
+    const geom = new THREE.BoxGeometry(w.w, 4, w.h);
+    const wall = new THREE.Mesh(geom, wallMaterial);
+    wall.position.set(w.x, 2, w.z);
+    scene.add(wall);
+    walls.push(wall);
+  });
+
+  // Player variables
+  let velocity = new THREE.Vector3();
+  let direction = new THREE.Vector3();
+  let canMove = false;
+
+  // Player collider radius
+  const playerRadius = 0.3;
+
+  // Collectibles (codes)
+  const codesCountElem = document.getElementById('codesCount');
+  const inventoryElem = document.getElementById('inventory');
+  const healthElem = document.getElementById('health');
+  const messageElem = document.getElementById('message');
+  const overlayElem = document.getElementById('overlay');
+  const startScreen = document.getElementById('startScreen');
+  const startBtn = document.getElementById('startBtn');
+
+  const TOTAL_CODES = 5;
+  let codesCollected = 0;
+  let codes = [];
+
+  // Health for fight phase
+  let playerHealth = 100;
+  let inFight = false;
+
+  // Create codes collectibles as cubes with glowing numbers
+  const codePositions = [
+    {x:-10, z:-20},
+    {x:12, z:-18},
+    {x:18, z:8},
+    {x:-18, z:12},
+    {x:0, z:15}
+  ];
+
+  const codeMaterial = new THREE.MeshPhongMaterial({ color: 0x44ff44 });
+  const codeCollectiblesGroup = new THREE.Group();
+
+  codePositions.forEach((pos, i) => {
+    const geom = new THREE.BoxGeometry(0.7,0.7,0.7);
+    const mat = codeMaterial.clone();
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.position.set(pos.x, 0.35, pos.z);
+    // Add glowing effect using emissive
+    mat.emissive = new THREE.Color(0x22ff22);
+    mat.emissiveIntensity = 0.6;
+
+    mesh.userData = { codeIndex: i+1 };
+    codeCollectiblesGroup.add(mesh);
+  });
+  scene.add(codeCollectiblesGroup);
+
+  // Python figure - represented by a red glowing box with eyes
+  const pythonGroup = new THREE.Group();
+
+  // Body
+  const pythonBodyGeom = new THREE.BoxGeometry(1.2, 2.5, 0.8);
+  const pythonBodyMat = new THREE.MeshPhongMaterial({ color: 0xaa0000, emissive: 0x550000, emissiveIntensity: 0.7 });
+  const pythonBody = new THREE.Mesh(pythonBodyGeom, pythonBodyMat);
+  pythonBody.position.set(0, 1.25, 0);
+  pythonGroup.add(pythonBody);
+
+  // Eyes - two small spheres
+  const eyeGeom = new THREE.SphereGeometry(0.15, 12, 12);
+  const eyeMatRed = new THREE.MeshBasicMaterial({color: 0xff1111});
+  const leftEye = new THREE.Mesh(eyeGeom, eyeMatRed);
+  leftEye.position.set(-0.3, 1.8, 0.45);
+  const rightEye = new THREE.Mesh(eyeGeom, eyeMatRed);
+  rightEye.position.set(0.3, 1.8, 0.45);
+  pythonGroup.add(leftEye);
+  pythonGroup.add(rightEye);
+
+  // Starting python position will be behind player initially
+  pythonGroup.position.set(0, 0, 20);
+  scene.add(pythonGroup);
+
+  // Initial player start position (center front area)
+  let playerPosition = new THREE.Vector3(0, 1.6, 10);
+  camera.position.copy(playerPosition);
+
+  // Controls setup
+  const controls = new THREE.PointerLockControls(camera, document.body);
+
+  startBtn.addEventListener('click', () => {
+    startScreen.style.display = 'none';
+    overlayElem.style.display = 'block';
+    controls.lock();
+    canMove = true;
+  });
+
+  controls.addEventListener('lock', function () {
+    canMove = true;
+  });
+  controls.addEventListener('unlock', function () {
+    canMove = false;
+  });
+
+  // Movement flags
+  const move = {
+    forward: false,
+    backward: false,
+    left: false,
+    right: false
+  };
+
+  window.addEventListener('keydown', (e) => {
+    switch(e.code) {
+      case 'ArrowUp':
+      case 'KeyW': move.forward = true; break;
+      case 'ArrowLeft':
+      case 'KeyA': move.left = true; break;
+      case 'ArrowDown':
+      case 'KeyS': move.backward = true; break;
+      case 'ArrowRight':
+      case 'KeyD': move.right = true; break;
+    }
+  });
+
+  window.addEventListener('keyup', (e) => {
+    switch(e.code) {
+      case 'ArrowUp':
+      case 'KeyW': move.forward = false; break;
+      case 'ArrowLeft':
+      case 'KeyA': move.left = false; break;
+      case 'ArrowDown':
+      case 'KeyS': move.backward = false; break;
+      case 'ArrowRight':
+      case 'KeyD': move.right = false; break;
+    }
+  });
+
+  // Collision detection helper: sphere to box collision
+  function intersectsPlayerAndWall(pos) {
+    // Player is a sphere radius playerRadius at pos
+    for (const wall of walls){
+      const box = new THREE.Box3().setFromObject(wall);
+      // Inflate box by -playerRadius so player sphere does not penetrate
+      box.expandByScalar(-playerRadius);
+      if (box.containsPoint(pos)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Collision for python (box) and player position
+  function intersectsPythonAndPlayer() {
+    const pythonBox = new THREE.Box3().setFromObject(pythonGroup);
+    // Player bbox as box around player position with radius
+    const playerBox = new THREE.Box3(
+      new THREE.Vector3(camera.position.x - playerRadius, camera.position.y - playerRadius, camera.position.z - playerRadius),
+      new THREE.Vector3(camera.position.x + playerRadius, camera.position.y + playerRadius, camera.position.z + playerRadius)
+    );
+    return pythonBox.intersectsBox(playerBox);
+  }
+
+  // Collectible collision detection
+  function checkCodeCollection() {
+    for (let i = codes.length; i < codeCollectiblesGroup.children.length; i++) {
+      const c = codeCollectiblesGroup.children[i];
+      const dist = camera.position.distanceTo(c.position);
+      if (dist < 1) {
+        // Collect code
+        codes.push(c.userData.codeIndex);
+        // Remove collectible from scene
+        codeCollectiblesGroup.remove(c);
+        codesCountElem.textContent = codes.length + "/" + TOTAL_CODES;
+        inventoryElem.textContent = "Codes: " + codes.join(", ");
+        break;
+      }
+    }
+  }
+
+  // Python chase AI - move towards player with a set speed avoiding walls
+  function pythonChase(delta) {
+    const pythonSpeed = inFight ? 1.8 : 1.2; // faster in fight
+    const dirToPlayer = new THREE.Vector3();
+    dirToPlayer.subVectors(camera.position, pythonGroup.position);
+    dirToPlayer.y = 0;
+    const dist = dirToPlayer.length();
+    if (dist > 0.1) {
+      dirToPlayer.normalize();
+      // Move python towards player while avoiding walls (simple)
+      const nextPos = pythonGroup.position.clone().addScaledVector(dirToPlayer, pythonSpeed * delta);
+
+      // Check collision with walls for python
+      let collision = false;
+      for (const wall of walls){
+        const wallBox = new THREE.Box3().setFromObject(wall);
+        // Expand box slightly for python size
+        wallBox.expandByScalar(0.6);
+        if (wallBox.containsPoint(nextPos)) {
+          collision = true;
+          break;
+        }
+      }
+      if (!collision) {
+        pythonGroup.position.copy(nextPos);
+      }
+      // Face python towards player
+      pythonGroup.lookAt(camera.position.x, pythonGroup.position.y, camera.position.z);
+    }
+  }
+
+  // Fight mechanics
+  let canAttack = true;
+  const attackCooldown = 1000; // 1 second cooldown between attacks
+
+  function playerAttack() {
+    if (!inFight || !canAttack) return;
+
+    canAttack = false;
+    setTimeout(() => {
+      canAttack = true;
+    }, attackCooldown);
+
+    // Compute distance to python
+    const dist = pythonGroup.position.distanceTo(camera.position);
+
+    if (dist < 3.5) {
+      // Successful hit reduces python health
+      pythonHealth -= 20;
+      showMessage("You hit Python! Remaining HP: " + pythonHealth, 1000, '#aaffaa');
+      if (pythonHealth <= 0) {
+        showMessage("You killed Python! You escaped the maze!", 6000, '#55ff55');
+        inFight = false;
+        canMove = false;
+      }
+    } else {
+      showMessage("Too far to hit Python!", 1000, '#ff5555');
+    }
+  }
+
+  // Show messages overlay
+  let msgTimeout;
+  function showMessage(text, duration=2000, color='#ff4444') {
+    clearTimeout(msgTimeout);
+    messageElem.style.display = 'block';
+    messageElem.style.color = color;
+    messageElem.textContent = text;
+    msgTimeout = setTimeout(() => {
+      messageElem.style.display = 'none';
+    }, duration);
+  }
+
+  // Fight room setup - simple walls around and teleport player & python
+  function enterFightRoom() {
+    // Clear collectibles from main maze
+    codeCollectiblesGroup.clear();
+
+    // Clear walls and floor for fight room
+    walls.forEach(w => scene.remove(w));
+    walls.length = 0;
+
+    floor.position.set(0, 0, 0);
+    floor.scale.set(1.2, 1, 1.2);
+    floor.material.color.set(0x330000);
+
+    // Create 4 spiked walls around the fight room
+    const spikeWallsMat = new THREE.MeshPhongMaterial({ color: 0x660000, emissive: 0x220000 });
+    const spikeWallsData = [
+      {x:0, z:-9, w:20, h:1},
+      {x:0, z:9, w:20, h:1},
+      {x:-9, z:0, w:1, h:18},
+      {x:9, z:0, w:1, h:18},
+    ];
+    spikeWallsData.forEach((w) => {
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(w.w, 5, w.h), spikeWallsMat);
+      wall.position.set(w.x, 2.5, w.z);
+      scene.add(wall);
+      walls.push(wall);
+    });
+
+    // Position player & python
+    playerPosition.set(0, 1.6, 7);
+    camera.position.copy(playerPosition);
+    pythonGroup.position.set(0, 0, -7);
+
+    // Reset python health
+    pythonHealth = 100;
+    playerHealth = 100;
+    healthElem.textContent = "Health: " + playerHealth;
+    inFight = true;
+
+    showMessage("Fight Python! Press Left Click to attack.", 4000, '#ff6666');
+  }
+
+  // Player health decrease on contact with python in fight
+  let lastDamageTime = 0;
+  const damageInterval = 1500;
+  const damageAmount = 15;
+
+  // Python health
+  let pythonHealth = 100;
+
+  // Animate loop
+  let prevTime = performance.now();
+
+  function animate() {
+    requestAnimationFrame(animate);
+
+    if (!canMove) {
+      renderer.render(scene, camera);
+      return;
+    }
+
+    const time = performance.now();
+    const delta = (time - prevTime) / 1000;
+
+    // Movement updates
+    velocity.x -= velocity.x * 10.0 * delta;
+    velocity.z -= velocity.z * 10.0 * delta;
+
+    direction.z = Number(move.forward) - Number(move.backward);
+    direction.x = Number(move.right) - Number(move.left);
+    direction.normalize();
+
+    if (move.forward || move.backward) velocity.z -= direction.z * 50.0 * delta;
+    if (move.left || move.right) velocity.x -= direction.x * 50.0 * delta;
+
+    // Attempt to move based on velocity with collision for player
+    let nextPos = camera.position.clone();
+    nextPos.x += velocity.x * delta;
+    nextPos.z += velocity.z * delta;
+
+    // Check collision with walls
+    if (!intersectsPlayerAndWall(nextPos)) {
+      camera.position.copy(nextPos);
+    }
+
+    // Keep player y fixed (height)
+    camera.position.y = 1.6;
+
+    // Python chase the player
+    pythonChase(delta);
+
+    // Check collision with python during game running
+    if (!inFight && intersectsPythonAndPlayer()) {
+      canMove = false;
+      showMessage("Caught by Python! Game Over.", 10000, '#ff0000');
+      controls.unlock();
+    }
+
+    // Check collectible pickup when not in fight
+    if (!inFight) {
+      checkCodeCollection();
+      if (codes.length === TOTAL_CODES) {
+        // All codes collected, enter fight room
+        canMove = false;
+        showMessage("All codes collected! Entering isolated fight room...", 3000, '#aaffaa');
+        setTimeout(() => {
+          enterFightRoom();
+          canMove = true;
+        }, 3000);
+      }
+    } else {
+      // Fight mode - player health tracking
+      if (intersectsPythonAndPlayer()) {
+        if (time - lastDamageTime > damageInterval) {
+          playerHealth -= damageAmount;
+          if (playerHealth <= 0) {
+            playerHealth = 0;
+            showMessage("You died! Python wins. Reload to try again.", 10000, '#ff0000');
+            canMove = false;
+            controls.unlock();
+          } else {
+            showMessage("Python hit you! Health: " + playerHealth, 1500, '#ff5555');
+          }
+          healthElem.textContent = "Health: " + playerHealth;
+          lastDamageTime = time;
+        }
+      }
+    }
+
+    prevTime = time;
+    renderer.render(scene, camera);
+  }
+
+  animate();
+
+  // Handle window resizing
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // Attack on mouse click during fight
+  window.addEventListener('click', e => {
+    if (canMove && inFight) {
+      playerAttack();
+    }
+  });
+})();
+</script>
+</body>
+</html>
+
